@@ -36,8 +36,10 @@ load_idt:
 	sti 				;turn on interrupts
 	ret
 
-keyboard_handler:                 
+keyboard_handler: 
+	pusha
 	call    keyboard_handler_main
+	popa
 	iretd
 
 start:

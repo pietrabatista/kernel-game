@@ -24,6 +24,14 @@ extern char read_port(unsigned short port);
 extern void write_port(unsigned short port, unsigned char data);
 extern void load_idt(unsigned long *idt_ptr);
 
+/* Entrada via IRQ: última tecla capturada */
+volatile int last_char = -1;  // -1 = nenhuma tecla nova
+
+/* Estado do jogo da velha */
+char board[9];     // ' ', 'X', 'O'
+int  turn = 0;     // 0='X', 1='O'
+int  game_over = 0;
+
 /* current cursor location */
 unsigned int current_loc = 0;
 /* video memory begins at address 0xb8000 */
@@ -123,29 +131,140 @@ void clear_screen(void)
 	}
 }
 
+/* JOGO DA VELHA */
+/* usa as globais já adicionadas:
+   char board[9]; int turn; int game_over; volatile int last_char; */
+
+static char cell_char(int idx) {
+    return (board[idx] == ' ') ? ('1' + idx) : board[idx];
+}
+
+static void game_reset(void) {
+    for (int i=0;i<9;i++) board[i] = ' ';
+    turn = 0;
+    game_over = 0;
+}
+
+static int game_check_winner(void) {
+    static const int W[8][3] = {
+        {0,1,2},{3,4,5},{6,7,8},
+        {0,3,6},{1,4,7},{2,5,8},
+        {0,4,8},{2,4,6}
+    };
+    for (int i=0;i<8;i++){
+        int a=W[i][0], b=W[i][1], c=W[i][2];
+        if (board[a] != ' ' && board[a]==board[b] && board[b]==board[c]) return board[a];
+    }
+    return 0;
+}
+
+static int game_full(void){
+    for (int i=0;i<9;i++) if (board[i]==' ') return 0;
+    return 1;
+}
+
+/* redesenha sempre do topo da tela */
+static void game_render(void) {
+    current_loc = 0;
+    clear_screen();
+
+    kprint("JOGO DA VELHA (1-9)  X vs O");
+    kprint_newline(); kprint_newline();
+
+    /* linha 0 */
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(0); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(1); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(2); vidptr[current_loc++]=0x07;
+    kprint_newline();
+
+    kprint("---+---+---"); kprint_newline();
+
+    /* linha 1 */
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(3); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(4); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(5); vidptr[current_loc++]=0x07;
+    kprint_newline();
+
+    kprint("---+---+---"); kprint_newline();
+
+    /* linha 2 */
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(6); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(7); vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]='|'; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=' '; vidptr[current_loc++]=0x07;
+    vidptr[current_loc++]=cell_char(8); vidptr[current_loc++]=0x07;
+    kprint_newline(); kprint_newline();
+
+    if (!game_over) {
+        kprint("Vez de: ");
+        vidptr[current_loc++] = (turn==0 ? 'X' : 'O'); vidptr[current_loc++] = 0x07;
+        kprint("   (pressione 1-9)   [R = reiniciar]");
+    } else {
+        kprint("[R = reiniciar]");
+    }
+}
+
+static void game_step(int ch) {
+    if (ch=='r' || ch=='R') { game_reset(); return; }
+    if (game_over) return;
+
+    if (ch<'1' || ch>'9') return;
+    int idx = ch - '1';
+    if (board[idx] != ' ') return;
+
+    board[idx] = (turn==0 ? 'X' : 'O');
+
+    int w = game_check_winner();
+    if (w) {
+        game_over = 1;
+        kprint_newline(); kprint_newline();
+        kprint("Vencedor: ");
+        vidptr[current_loc++] = (char)w; vidptr[current_loc++] = 0x07;
+        return;
+    }
+    if (game_full()) {
+        game_over = 1;
+        kprint_newline(); kprint_newline();
+        kprint("Empate!");
+        return;
+    }
+    turn ^= 1; // troca jogador
+}
+
 void keyboard_handler_main(void)
 {
-	unsigned char status;
-	char keycode;
+    unsigned char status = read_port(KEYBOARD_STATUS_PORT);
+    if (status & 0x01) {
+        unsigned char keycode = (unsigned char)read_port(KEYBOARD_DATA_PORT);
 
-	/* write EOI */
-	write_port(0x20, 0x20);
-
-	status = read_port(KEYBOARD_STATUS_PORT);
-	/* Lowest bit of status will be set if buffer is not empty */
-	if (status & 0x01) {
-		keycode = read_port(KEYBOARD_DATA_PORT);
-		if(keycode < 0)
-			return;
-
-		if(keycode == ENTER_KEY_CODE) {
-			kprint_newline();
-			return;
-		}
-
-		vidptr[current_loc++] = keyboard_map[(unsigned char) keycode];
-		vidptr[current_loc++] = 0x07;
-	}
+        // ignorar break codes (tecla solta = bit 7 ligado)
+        if (!(keycode & 0x80)) {
+            unsigned char ascii = keyboard_map[keycode];
+            if (ascii) {
+                last_char = (int)ascii;   // passa a tecla pro loop
+            }
+        }
+    }
+    write_port(0x20, 0x20); // EOI no final
 }
 
 void kmain(void)
@@ -159,5 +278,16 @@ void kmain(void)
 	idt_init();
 	kb_init();
 
-	while(1);
+    /*  loop do jogo  */
+    game_reset();
+    game_render();
+
+    while (1) {
+        if (last_char != -1) {
+            int c = last_char; last_char = -1;
+            game_step(c);
+            game_render();
+        }
+        __asm__ __volatile__("hlt"); // dorme até próxima IRQ
+    }
 }
