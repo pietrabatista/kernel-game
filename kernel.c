@@ -286,8 +286,14 @@ void kmain(void)
         if (last_char != -1) {
             int c = last_char; last_char = -1;
             game_step(c);
-            game_render();
+
+            if (!game_over) {
+                game_render();
+            } else {
+
+            }
         }
-        __asm__ __volatile__("hlt"); // dorme até próxima IRQ
     }
+        __asm__ __volatile__("hlt"); // dorme até próxima IRQ
+    
 }
